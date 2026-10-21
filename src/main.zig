@@ -2,93 +2,26 @@ const std = @import("std");
 
 const config = @import("config.zig");
 
-const Error = error{
-    MissingConfigPath,
-    TooManyArguments,
-};
-
-const Options = enum {
-    none,
-    verbose,
-};
-
-const Args = struct {
-    config_path: []const u8,
-    options: Options,
-};
+const CONFIG_PATH = "/.config/dotwatch/config.toml";
 
 pub fn main(init: std.process.Init) !void {
-    const gpa = init.gpa;
     const io = init.io;
-    const arena = init.arena.allocator();
+    const gpa = init.gpa;
 
-    var stdout_buf: [1024]u8 = undefined;
-    var stdout_file_writer = std.Io.File.stdout().writer(io, &stdout_buf);
-    const stdout = &stdout_file_writer.interface;
+    const env_map = init.environ_map;
+    const home = env_map.get("HOME") orelse return error.HomeNotFound;
 
-    var arg_iter = try init.minimal.args.iterateAllocator(arena);
-    defer arg_iter.deinit();
+    const path = try std.fs.path.join(gpa, &.{ home, CONFIG_PATH });
+    const file = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited);
+    gpa.free(path); // Path not needed anymore
 
-    const args = parse_args(&arg_iter) catch |e| {
-        std.log.err("Incorrect argument: {}", .{e});
-        try print_help(stdout);
+    var conf = try config.parse(gpa, file);
+    defer conf.deinit(gpa);
 
-        std.process.exit(1);
-    };
+    gpa.free(file); // Whole file not needed anymore
 
-    const file = try std.Io.Dir.cwd().readFileAlloc(io, args.config_path, gpa, .unlimited);
-    defer gpa.free(file);
-
-    std.debug.print("Config path: {s}\n", .{args.config_path});
-    std.debug.print("Options: {}\n", .{args.options});
-    std.debug.print("\nConfig file:\n{s}\n", .{file});
-
-    const conf = try config.parse(file);
-    _ = conf; // autofix
-
-}
-
-pub fn parse_args(
-    iter: *std.process.Args.Iterator,
-) Error!Args {
-    _ = iter.skip();
-
-    var config_path: ?[]const u8 = null;
-    var options: Options = .none;
-
-    while (iter.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-v")) {
-            options = .verbose;
-        } else {
-            if (config_path == null) {
-                config_path = arg;
-            } else {
-                return Error.TooManyArguments;
-            }
-        }
+    std.debug.print("Repo: {s}\n", .{conf.repo});
+    for (conf.tracked.items) |item| {
+        std.debug.print("Tracked (Offset {d}): {s}\n", .{ item.offset, item.value });
     }
-
-    return Args{
-        .config_path = config_path orelse return Error.MissingConfigPath,
-        .options = options,
-    };
-}
-
-fn print_help(writer: *std.Io.Writer) !void {
-    try writer.print(
-        \\dotwatch — A configuration watch tool
-        \\
-        \\Usage:
-        \\  dotwatch [options] <config_path>
-        \\
-        \\Arguments:
-        \\  <config_path>    Path to the configuration file (Required)
-        \\
-        \\Options:
-        \\  -v, --verbose    Enable verbose debug logging
-        \\  -h, --help       Display this help message
-        \\
-    , .{});
-
-    try writer.flush();
 }
