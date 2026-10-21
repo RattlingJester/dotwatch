@@ -4,11 +4,6 @@ const Self = @This();
 
 const INIT_CAP = 1024;
 
-pub const ParseEror = error{
-    SyntaxError,
-    RepoFieldEmpty,
-};
-
 const Tracked = struct {
     value: []const u8,
     offset: usize,
