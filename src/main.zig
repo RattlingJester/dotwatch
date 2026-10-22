@@ -1,10 +1,16 @@
 const std = @import("std");
-const builtint = @import("builtin");
+const builtin = @import("builtin");
 
 const config = @import("config.zig");
 const git = @import("git_wrapper.zig");
 
-const CONFIG_DIR = ".config/dotwatch/";
+const CONFIG_DIR = switch (builtin.target.os.tag) {
+    .windows => "./",
+    .linux => ".config/dotwatch",
+    else => @compileError("OS not supported"),
+};
+
+// const CONFIG_DIR = ".config/dotwatch/";
 const CONFIG_PATH = CONFIG_DIR ++ "config.toml";
 const STATE_PATH = CONFIG_DIR ++ "db";
 
@@ -13,7 +19,7 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
 
     const env_map = init.environ_map;
-    const home = env_map.get("HOME") orelse return error.HomeNotFound;
+    const home = env_map.get("HOME") orelse "";
 
     const path = try std.fs.path.join(gpa, &.{ home, CONFIG_PATH });
     const file = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch {
