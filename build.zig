@@ -8,12 +8,15 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
+
+    mod.linkSystemLibrary("libgit2", .{});
 
     const exe = b.addExecutable(.{
         .name = "dotwatch",
         .root_module = mod,
-        .linkage = .static,
+        .linkage = .dynamic,
     });
 
     b.installArtifact(exe);

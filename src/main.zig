@@ -1,8 +1,12 @@
 const std = @import("std");
+const builtint = @import("builtin");
 
 const config = @import("config.zig");
+const git = @import("git_wrapper.zig");
 
-const CONFIG_PATH = "/.config/dotwatch/config.toml";
+const CONFIG_DIR = ".config/dotwatch/";
+const CONFIG_PATH = CONFIG_DIR ++ "config.toml";
+const STATE_PATH = CONFIG_DIR ++ "db";
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -35,4 +39,25 @@ pub fn main(init: std.process.Init) !void {
     for (conf.tracked.items) |item| {
         std.debug.print("Tracked (Offset {d}): {s}\n", .{ item.offset, item.value });
     }
+
+    git.init();
+    defer git.deinit();
+
+    const repo = git.repository_open(conf.repo) orelse {
+        std.log.err("Failed to open repository", .{});
+
+        std.process.exit(1);
+    };
+    defer git.repository_deinit(repo);
+
+    const head = git.revparse_single(repo, "HEAD^{commit}") orelse {
+        std.log.err("Error getting HEAD lol", .{});
+
+        std.process.exit(1);
+    };
+    defer git.object_deinit(head);
+
+    const commit: ?*git.g.git_commit = @ptrCast(head);
+
+    std.debug.print("Commit message: {s}\n", .{git.g.git_commit_message(commit)});
 }

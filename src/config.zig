@@ -2,15 +2,13 @@ const std = @import("std");
 
 const Self = @This();
 
-const INIT_CAP = 1024;
-
 const Tracked = struct {
-    value: []const u8,
+    value: [:0]const u8,
     offset: usize,
 };
 
 tracked: std.ArrayList(Tracked) = .empty,
-repo: []const u8 = "",
+repo: [:0]const u8 = "",
 
 pub fn parse(alloc: std.mem.Allocator, buffer: []const u8) !Self {
     var config = Self{};
@@ -48,7 +46,9 @@ pub fn parse(alloc: std.mem.Allocator, buffer: []const u8) !Self {
             const val = std.mem.trim(u8, line[eq_idx + 1 ..], " \t");
 
             if (std.mem.eql(u8, key, "repo")) {
-                config.repo = try alloc.dupe(u8, std.mem.trim(u8, val, "\"\'"));
+                const path = std.mem.trim(u8, val, "\"\'");
+
+                config.repo = try alloc.dupeSentinel(u8, path, 0);
             } else if (std.mem.eql(u8, key, "tracked")) {
                 if (std.mem.indexOfScalar(u8, val, '[')) |bracket_idx| {
                     is_in_tracked_array = true;
@@ -94,7 +94,7 @@ fn append(
 
     const start_offset = @intFromPtr(clean_value.ptr) - @intFromPtr(base_buffer.ptr);
 
-    const owned_value = try alloc.dupe(u8, clean_value);
+    const owned_value = try alloc.dupeSentinel(u8, clean_value, 0);
     errdefer alloc.free(owned_value);
 
     try list.append(alloc, Tracked{
