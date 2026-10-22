@@ -1,8 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const watch = @import("watch.zig");
 const config = @import("config.zig");
 const git = @import("git_wrapper.zig");
+
+pub const std_options = std.Options{ .logFn = log };
 
 const CONFIG_DIR = switch (builtin.target.os.tag) {
     .windows => "./",
@@ -12,56 +15,82 @@ const CONFIG_DIR = switch (builtin.target.os.tag) {
 const CONFIG_PATH = CONFIG_DIR ++ "config.toml";
 const STATE_PATH = CONFIG_DIR ++ "db";
 
+var global_io: std.Io = undefined;
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const gpa = init.gpa;
 
+    global_io = io;
+
     const env_map = init.environ_map;
     const home = env_map.get("HOME") orelse "";
 
-    const path = try std.fs.path.join(gpa, &.{ home, CONFIG_PATH });
-    const file = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch {
-        std.log.err("Could not find config file at path: {s}", .{path});
+    const config_path = try std.fs.path.join(gpa, &.{ home, CONFIG_PATH });
+    const state_path = try std.fs.path.join(gpa, &.{ home, STATE_PATH });
+    defer gpa.free(config_path);
+    defer gpa.free(state_path);
 
-        gpa.free(path);
+    const contents = std.Io.Dir.cwd().readFileAlloc(io, config_path, gpa, .unlimited) catch {
+        std.log.err("Could not find config file at path: {s}", .{config_path});
+
+        gpa.free(config_path);
         std.process.exit(1);
     };
+    defer gpa.free(contents);
 
-    gpa.free(path); // Path not needed anymore
-
-    var conf = config.parse(gpa, file) catch {
+    var conf = config.parse(gpa, contents) catch {
         // TODO: print the error
 
-        gpa.free(file);
+        gpa.free(contents);
         std.process.exit(1);
     };
-    defer conf.deinit(gpa);
+    defer conf.deinit();
 
-    gpa.free(file); // Whole file not needed anymore
+    var state = try watch.init(gpa, io, state_path);
+    defer state.deinit();
 
-    std.debug.print("Repo: {s}\n", .{conf.repo});
-    for (conf.tracked.items) |item| {
-        std.debug.print("Tracked (Offset {d}): {s}\n", .{ item.offset, item.value });
-    }
+    const changed = try state.update(io, conf);
+    defer gpa.free(changed);
 
-    git.init();
-    defer git.deinit();
+    try state.store(io, state_path);
 
-    const repo = git.repository_open(conf.repo) orelse {
-        std.log.err("Failed to open repository", .{});
+    // std.debug.print("Repo: {s}\n", .{conf.repo});
+    // for (conf.tracked.items) |item| {
+    //     std.debug.print("Tracked (Offset {d}): {s}\n", .{ item.offset, item.value });
+    // }
 
-        std.process.exit(1);
-    };
-    defer git.repository_deinit(repo);
+    // std.debug.print("State: {}\n", .{state});
 
-    const head = git.revparse_single(repo, "HEAD^{commit}") orelse {
-        std.log.err("Error getting HEAD lol", .{});
+    // git.init();
+    // defer git.deinit();
 
-        std.process.exit(1);
-    };
-    defer git.object_deinit(head);
+    // const repo = git.repository_open(conf.repo) orelse {
+    //     std.log.err("Failed to open repository", .{});
 
-    const commit: ?*git.g.git_commit = @ptrCast(head);
+    //     std.process.exit(1);
+    // };
+    // defer git.repository_deinit(repo);
+}
 
-    std.debug.print("Commit message: {s}\n", .{git.g.git_commit_message(commit)});
+// Probably should do something better
+fn log(
+    comptime level: std.log.Level,
+    comptime scope: @EnumLiteral(),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    _ = scope;
+
+    const prev = global_io.swapCancelProtection(.blocked);
+    defer _ = global_io.swapCancelProtection(prev);
+
+    var buffer: [256]u8 = undefined;
+
+    var stream = std.Io.File.stdout().writerStreaming(global_io, &buffer);
+    const stdout = &stream.interface;
+
+    const prefix = "[" ++ @tagName(level) ++ "]";
+    stdout.print(prefix ++ format ++ "\n", args) catch return;
+    stdout.flush() catch return;
 }

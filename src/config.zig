@@ -9,10 +9,11 @@ const Tracked = struct {
 
 tracked: std.ArrayList(Tracked) = .empty,
 repo: [:0]const u8 = "",
+allocator: std.mem.Allocator,
 
 pub fn parse(alloc: std.mem.Allocator, buffer: []const u8) !Self {
-    var config = Self{};
-    errdefer config.deinit(alloc);
+    var config = Self{ .allocator = alloc };
+    errdefer config.deinit();
 
     var tokens = std.mem.tokenizeAny(u8, buffer, "\n\r");
     var is_in_tracked_array = false;
@@ -72,14 +73,14 @@ pub fn parse(alloc: std.mem.Allocator, buffer: []const u8) !Self {
     return config;
 }
 
-pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
+pub fn deinit(self: *Self) void {
     for (self.tracked.items) |item| {
-        alloc.free(item.value);
+        self.allocator.free(item.value);
     }
-    self.tracked.deinit(alloc);
+    self.tracked.deinit(self.allocator);
 
     if (self.repo.len > 0) {
-        alloc.free(self.repo);
+        self.allocator.free(self.repo);
     }
 }
 
