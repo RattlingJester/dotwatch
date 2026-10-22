@@ -6,11 +6,9 @@ const git = @import("git_wrapper.zig");
 
 const CONFIG_DIR = switch (builtin.target.os.tag) {
     .windows => "./",
-    .linux => ".config/dotwatch",
+    .linux => ".config/dotwatch/",
     else => @compileError("OS not supported"),
 };
-
-// const CONFIG_DIR = ".config/dotwatch/";
 const CONFIG_PATH = CONFIG_DIR ++ "config.toml";
 const STATE_PATH = CONFIG_DIR ++ "db";
 
