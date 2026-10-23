@@ -5,6 +5,11 @@ const log = std.log.scoped(.state);
 const Self = @This();
 const StateMap = std.StringHashMap(i128);
 
+pub const Diff = struct {
+    file_path: []const u8,
+    parent_dir: []const u8,
+};
+
 alloc: std.mem.Allocator,
 map: StateMap,
 
@@ -31,10 +36,10 @@ pub fn deinit(self: *Self) void {
     self.map.deinit();
 }
 
-pub fn update(self: *Self, io: std.Io, config: Config) ![][]const u8 {
+pub fn update(self: *Self, io: std.Io, config: Config) ![]const Diff {
     const alloc = self.alloc;
 
-    var changed: std.ArrayList([]const u8) = .empty;
+    var changed: std.ArrayList(Diff) = .empty;
     errdefer changed.deinit(alloc);
 
     var n_new: usize = 0;
@@ -77,8 +82,14 @@ pub fn update(self: *Self, io: std.Io, config: Config) ![][]const u8 {
 
                 if (kv.value_ptr.* != mtime) {
                     kv.value_ptr.* = mtime;
-                    try changed.append(alloc, kv.key_ptr.*);
+
+                    // try changed.append(alloc, kv.key_ptr.*);
+                    try changed.append(alloc, .{
+                        .file_path = kv.key_ptr.*,
+                        .parent_dir = entry.value,
+                    });
                     n_modified += 1;
+
                     log.info("modified: {s}", .{kv.key_ptr.*});
                 } else {
                     n_unchanged += 1;
@@ -86,10 +97,16 @@ pub fn update(self: *Self, io: std.Io, config: Config) ![][]const u8 {
                 }
             } else {
                 errdefer alloc.free(full);
-                try self.map.put(full, mtime);
-                try changed.append(alloc, full);
 
+                try self.map.put(full, mtime);
+
+                // try changed.append(alloc, full);
+                try changed.append(alloc, .{
+                    .file_path = full,
+                    .parent_dir = entry.value,
+                });
                 n_new += 1;
+
                 log.info("new: {s}", .{full});
             }
         }

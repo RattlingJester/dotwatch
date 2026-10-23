@@ -5,10 +5,10 @@ const watch = @import("watch.zig");
 const config = @import("config.zig");
 const git = @import("git_wrapper.zig");
 
-pub const std_options = std.Options{ .logFn = log };
+pub const std_options = std.Options{ .logFn = log, .log_level = .info };
 
 const CONFIG_DIR = switch (builtin.target.os.tag) {
-    .windows => "./",
+    .windows => "./", // Use program folder for windows
     .linux => ".config/dotwatch/",
     else => @compileError("OS not supported"),
 };
@@ -26,12 +26,14 @@ pub fn main(init: std.process.Init) !void {
     const env_map = init.environ_map;
     const home = env_map.get("HOME") orelse "";
 
+    const cwd = std.Io.Dir.cwd();
+
     const config_path = try std.fs.path.join(gpa, &.{ home, CONFIG_PATH });
     const state_path = try std.fs.path.join(gpa, &.{ home, STATE_PATH });
     defer gpa.free(config_path);
     defer gpa.free(state_path);
 
-    const contents = std.Io.Dir.cwd().readFileAlloc(io, config_path, gpa, .unlimited) catch {
+    const contents = cwd.readFileAlloc(io, config_path, gpa, .unlimited) catch {
         std.log.err("Could not find config file at path: {s}", .{config_path});
 
         gpa.free(config_path);
@@ -55,22 +57,36 @@ pub fn main(init: std.process.Init) !void {
 
     try state.store(io, state_path);
 
-    // std.debug.print("Repo: {s}\n", .{conf.repo});
-    // for (conf.tracked.items) |item| {
-    //     std.debug.print("Tracked (Offset {d}): {s}\n", .{ item.offset, item.value });
-    // }
+    for (changed) |diff| {
+        const folder_name = std.fs.path.basename(diff.parent_dir);
 
-    // std.debug.print("State: {}\n", .{state});
+        var rel_path = diff.file_path[diff.parent_dir.len..];
+        if (rel_path.len > 0 and (rel_path[0] == '/' or rel_path[0] == '\\')) {
+            rel_path = rel_path[1..];
+        }
 
-    // git.init();
-    // defer git.deinit();
+        const dest = try std.fs.path.join(gpa, &.{ conf.repo, folder_name, rel_path });
+        defer gpa.free(dest);
 
-    // const repo = git.repository_open(conf.repo) orelse {
-    //     std.log.err("Failed to open repository", .{});
+        if (std.fs.path.dirname(dest)) |dir_path| {
+            try cwd.createDirPath(io, dir_path);
+        }
 
-    //     std.process.exit(1);
-    // };
-    // defer git.repository_deinit(repo);
+        try cwd.copyFile(diff.file_path, cwd, dest, io, .{});
+    }
+
+    git.init();
+    defer git.deinit();
+
+    const repo = git.repository_open(conf.repo) orelse {
+        std.log.err("Failed to open repository", .{});
+
+        std.process.exit(1);
+    };
+    defer git.repository_deinit(repo);
+
+    const time = std.Io.Clock.real.now(io);
+    try git.commit_everything(repo, time);
 }
 
 // Probably should do something better

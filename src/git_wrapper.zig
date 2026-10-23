@@ -1,4 +1,5 @@
-pub const g = @import("git2.zig");
+const std = @import("std");
+const g = @import("git2.zig");
 
 pub fn init() void {
     _ = g.git_libgit2_init();
@@ -32,4 +33,10 @@ pub fn revparse_single(repo: ?*g.git_repository, spec: [:0]const u8) ?*g.git_obj
 
 pub fn object_deinit(obj: *g.git_object) void {
     g.git_object_free(obj);
+}
+
+// TODO
+pub fn commit_everything(repo: *g.git_repository, time: std.Io.Timestamp) !void {
+    _ = repo; // autofix
+    _ = time; // autofix
 }
