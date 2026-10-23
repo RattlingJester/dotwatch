@@ -2,8 +2,8 @@ const std = @import("std");
 
 const Self = @This();
 
-const Tracked = struct {
-    value: [:0]const u8,
+pub const Tracked = struct {
+    tracked_path: [:0]const u8,
     offset: usize,
 };
 
@@ -75,7 +75,7 @@ pub fn parse(alloc: std.mem.Allocator, buffer: []const u8) !Self {
 
 pub fn deinit(self: *Self) void {
     for (self.tracked.items) |item| {
-        self.allocator.free(item.value);
+        self.allocator.free(item.tracked_path);
     }
     self.tracked.deinit(self.allocator);
 
@@ -99,7 +99,7 @@ fn append(
     errdefer alloc.free(owned_value);
 
     try list.append(alloc, Tracked{
-        .value = owned_value,
+        .tracked_path = owned_value,
         .offset = start_offset,
     });
 }

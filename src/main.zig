@@ -72,14 +72,16 @@ pub fn main(init: std.process.Init) !void {
             try cwd.createDirPath(io, dir_path);
         }
 
+        // std.debug.print("Diff item: {s}\n", .{diff.file_path});
+
         try cwd.copyFile(diff.file_path, cwd, dest, io, .{});
     }
 
     git.init();
     defer git.deinit();
 
-    const repo = git.repository_open(conf.repo) orelse {
-        std.log.err("Failed to open repository", .{});
+    const repo = git.repository_open(conf.repo) catch |e| {
+        std.log.err("Failed to open repository: {}", .{e});
 
         std.process.exit(1);
     };

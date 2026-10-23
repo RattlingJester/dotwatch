@@ -1,5 +1,6 @@
 const std = @import("std");
 const Config = @import("config.zig");
+const Tracked = Config.Tracked;
 const log = std.log.scoped(.state);
 
 const Self = @This();
@@ -10,8 +11,14 @@ pub const Diff = struct {
     parent_dir: []const u8,
 };
 
+// TODO: make this without globals
+var n_new: usize = 0;
+var n_modified: usize = 0;
+var n_unchanged: usize = 0;
+
 alloc: std.mem.Allocator,
 map: StateMap,
+diff: std.ArrayList(Diff) = .empty,
 
 pub fn init(alloc: std.mem.Allocator, io: std.Io, db_path: []const u8) !Self {
     const map = load(alloc, io, db_path) catch |err| switch (err) {
@@ -39,76 +46,33 @@ pub fn deinit(self: *Self) void {
 pub fn update(self: *Self, io: std.Io, config: Config) ![]const Diff {
     const alloc = self.alloc;
 
-    var changed: std.ArrayList(Diff) = .empty;
-    errdefer changed.deinit(alloc);
-
-    var n_new: usize = 0;
-    var n_modified: usize = 0;
-    var n_unchanged: usize = 0;
+    errdefer self.diff.deinit(alloc);
 
     for (config.tracked.items) |entry| {
-        log.info("scanning '{s}'", .{entry.value});
+        log.info("scanning '{s}'", .{entry.tracked_path});
 
-        var dir = std.Io.Dir.cwd().openDir(io, entry.value, .{
-            .iterate = true,
-            .follow_symlinks = false,
-        }) catch |err| {
-            log.err("cannot open tracked directory '{s}': {s}", .{ entry.value, @errorName(err) });
+        const stat = std.Io.Dir.cwd().statFile(io, entry.tracked_path, .{}) catch |err| {
+            log.err("cannot stat '{s}': {}", .{ entry.tracked_path, err });
 
             return err;
         };
-        defer dir.close(io);
 
-        var walker = try dir.walk(alloc);
-        defer walker.deinit();
+        switch (stat.kind) {
+            .directory => {
+                var dir = std.Io.Dir.cwd().openDir(io, entry.tracked_path, .{
+                    .iterate = true,
+                    .follow_symlinks = false,
+                }) catch |err| {
+                    log.err("cannot open tracked directory '{s}': {}", .{ entry.tracked_path, err });
 
-        while (try walker.next(io)) |item| {
-            switch (item.kind) {
-                .file => {},
-                else => continue,
-            }
+                    return err;
+                };
+                defer dir.close(io);
 
-            const stat = dir.statFile(io, item.path, .{ .follow_symlinks = false }) catch |err| {
-                log.err("cannot stat '{s}/{s}': {s}", .{ entry.value, item.path, @errorName(err) });
-
-                return err;
-            };
-            const mtime: i128 = stat.mtime.nanoseconds;
-
-            const full = try std.fs.path.join(alloc, &.{ entry.value, item.path });
-
-            if (self.map.getEntry(full)) |kv| {
-                alloc.free(full);
-
-                if (kv.value_ptr.* != mtime) {
-                    kv.value_ptr.* = mtime;
-
-                    // try changed.append(alloc, kv.key_ptr.*);
-                    try changed.append(alloc, .{
-                        .file_path = kv.key_ptr.*,
-                        .parent_dir = entry.value,
-                    });
-                    n_modified += 1;
-
-                    log.info("modified: {s}", .{kv.key_ptr.*});
-                } else {
-                    n_unchanged += 1;
-                    log.debug("unchanged: {s}", .{kv.key_ptr.*});
-                }
-            } else {
-                errdefer alloc.free(full);
-
-                try self.map.put(full, mtime);
-
-                // try changed.append(alloc, full);
-                try changed.append(alloc, .{
-                    .file_path = full,
-                    .parent_dir = entry.value,
-                });
-                n_new += 1;
-
-                log.info("new: {s}", .{full});
-            }
+                try self.process_dir(entry, dir, alloc, io);
+            },
+            .file => try self.process_file(entry, "", stat, alloc),
+            else => return error.NotSupportedFileType,
         }
     }
 
@@ -117,7 +81,7 @@ pub fn update(self: *Self, io: std.Io, config: Config) ![]const Diff {
         .{ n_new, n_modified, n_unchanged },
     );
 
-    return changed.toOwnedSlice(alloc);
+    return self.diff.toOwnedSlice(alloc);
 }
 
 pub fn store(self: *const Self, io: std.Io, path: []const u8) !void {
@@ -150,6 +114,72 @@ pub fn store(self: *const Self, io: std.Io, path: []const u8) !void {
     try std.Io.Dir.rename(cwd, tmp_path, cwd, path, io);
 
     log.info("saved {d} entries to '{s}'", .{ self.map.count(), path });
+}
+
+fn process_dir(
+    self: *Self,
+    entry: Tracked,
+    dir: std.Io.Dir,
+    alloc: std.mem.Allocator,
+    io: std.Io,
+) !void {
+    var walker = try dir.walk(alloc);
+    defer walker.deinit();
+
+    // Walker visits subdirectories automatically
+    while (try walker.next(io)) |item| {
+        if (item.kind == .file) {
+            const stat = dir.statFile(io, item.path, .{}) catch |err| {
+                log.err("cannot stat '{s}/{s}': {}", .{ entry.tracked_path, item.path, err });
+
+                return err;
+            };
+
+            try self.process_file(entry, item.path, stat, alloc);
+        } else continue;
+    }
+}
+fn process_file(
+    self: *Self,
+    entry: Tracked,
+    sub_path: []const u8,
+    stat: std.Io.Dir.Stat,
+    alloc: std.mem.Allocator,
+) !void {
+    const mtime: i128 = stat.mtime.nanoseconds;
+
+    const full = try std.fs.path.join(alloc, &.{ entry.tracked_path, sub_path });
+
+    if (self.map.getEntry(full)) |kv| {
+        alloc.free(full);
+
+        if (kv.value_ptr.* != mtime) {
+            kv.value_ptr.* = mtime;
+
+            try self.diff.append(alloc, .{
+                .file_path = kv.key_ptr.*,
+                .parent_dir = entry.tracked_path,
+            });
+            n_modified += 1;
+
+            log.info("modified: {s}", .{kv.key_ptr.*});
+        } else {
+            n_unchanged += 1;
+            log.debug("unchanged: {s}", .{kv.key_ptr.*});
+        }
+    } else {
+        errdefer alloc.free(full);
+
+        try self.map.put(full, mtime);
+
+        try self.diff.append(alloc, .{
+            .file_path = full,
+            .parent_dir = entry.tracked_path,
+        });
+        n_new += 1;
+
+        log.info("new: {s}", .{full});
+    }
 }
 
 fn load(alloc: std.mem.Allocator, io: std.Io, db_path: []const u8) !StateMap {
