@@ -8,37 +8,57 @@ pub const Tracked = struct {
 };
 
 tracked: std.ArrayList(Tracked) = .empty,
-repo: [:0]const u8 = "",
-allocator: std.mem.Allocator,
+ignore_files: std.ArrayList([]const u8) = .empty,
+repo: [:0]const u8 = undefined,
 
 pub fn parse(alloc: std.mem.Allocator, buffer: []const u8) !Self {
-    var config = Self{ .allocator = alloc };
-    errdefer config.deinit();
+    var config = Self{};
+    errdefer config.deinit(alloc);
 
     var tokens = std.mem.tokenizeAny(u8, buffer, "\n\r");
-    var is_in_tracked_array = false;
+    var current_section: enum { none, tracked, ignore_files } = .none;
+
+    var found_repo = false;
+    var found_tracked = false;
+    var found_config_section = false;
 
     while (tokens.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t");
-
         if (line.len == 0 or line[0] == '#') continue;
 
-        if (is_in_tracked_array) {
+        if (current_section == .tracked) {
+            found_tracked = true;
             if (std.mem.indexOfScalar(u8, line, ']')) |bracket_idx| {
-                const pre_bracket = std.mem.trim(u8, line[0..bracket_idx], " \t,");
-
-                if (pre_bracket.len > 0) {
-                    try append(alloc, &config.tracked, buffer, pre_bracket);
-                }
-
-                is_in_tracked_array = false;
-
-                continue;
+                const item = std.mem.trim(u8, line[0..bracket_idx], " \t,");
+                if (item.len > 0) try append(alloc, &config.tracked, buffer, item);
+                current_section = .none;
+            } else {
+                const item = std.mem.trim(u8, line, " \t,");
+                if (item.len > 0) try append(alloc, &config.tracked, buffer, item);
             }
+            continue;
+        }
 
-            const clean_item = std.mem.trim(u8, line, " \t,");
-            try append(alloc, &config.tracked, buffer, clean_item);
+        if (current_section == .ignore_files) {
+            if (std.mem.indexOfScalar(u8, line, ']')) |bracket_idx| {
+                const item = std.mem.trim(u8, line[0..bracket_idx], " \t,\"'");
+                if (item.len > 0) {
+                    const owned = try alloc.dupe(u8, item);
+                    try config.ignore_files.append(alloc, owned);
+                }
+                current_section = .none;
+            } else {
+                const item = std.mem.trim(u8, line, " \t,\"'");
+                if (item.len > 0) {
+                    const owned = try alloc.dupe(u8, item);
+                    try config.ignore_files.append(alloc, owned);
+                }
+            }
+            continue;
+        }
 
+        if (std.mem.eql(u8, line, "[config]")) {
+            found_config_section = true;
             continue;
         }
 
@@ -47,40 +67,52 @@ pub fn parse(alloc: std.mem.Allocator, buffer: []const u8) !Self {
             const val = std.mem.trim(u8, line[eq_idx + 1 ..], " \t");
 
             if (std.mem.eql(u8, key, "repo")) {
-                const path = std.mem.trim(u8, val, "\"\'");
-
+                const path = std.mem.trim(u8, val, "\"'");
                 config.repo = try alloc.dupeSentinel(u8, path, 0);
+                found_repo = true;
             } else if (std.mem.eql(u8, key, "tracked")) {
-                if (std.mem.indexOfScalar(u8, val, '[')) |bracket_idx| {
-                    is_in_tracked_array = true;
-
-                    const remainder = std.mem.trim(u8, val[bracket_idx + 1 ..], " \t,");
-                    if (remainder.len > 0) {
-                        if (std.mem.indexOfScalar(u8, remainder, ']')) |end_bracket| {
-                            const inline_item = std.mem.trim(u8, remainder[0..end_bracket], " \t,");
-
-                            try append(alloc, &config.tracked, buffer, inline_item);
-                            is_in_tracked_array = false;
-                        } else {
-                            try append(alloc, &config.tracked, buffer, remainder);
-                        }
-                    }
+                found_tracked = true;
+                try parse_inline_or_arr(alloc, &config.tracked, buffer, val, &current_section, .tracked);
+            } else if (std.mem.eql(u8, key, "ignore_files")) {
+                var dummy_list = std.ArrayList([]const u8).empty;
+                defer {
+                    for (dummy_list.items) |item| alloc.free(item);
+                    dummy_list.deinit(alloc);
                 }
+
+                var state: enum { none, tracked, ignore_files } = .none;
+                try parse_inline_or_arr(alloc, &dummy_list, buffer, val, &state, .ignore_files);
+
+                for (dummy_list.items) |item| {
+                    const clean_item = std.mem.trim(u8, item, "\"'");
+                    const owned = try alloc.dupe(u8, clean_item);
+                    try config.ignore_files.append(alloc, owned);
+                }
+                if (state == .ignore_files) current_section = .ignore_files;
             }
         }
     }
 
+    if (!found_repo) return error.MissingRequiredRepo;
+    if (!found_tracked or config.tracked.items.len == 0) return error.MissingRequiredTracked;
+    if (!found_config_section) return error.MissingRequiredConfigSection;
+
     return config;
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
     for (self.tracked.items) |item| {
-        self.allocator.free(item.tracked_path);
+        allocator.free(item.tracked_path);
     }
-    self.tracked.deinit(self.allocator);
+    self.tracked.deinit(allocator);
+
+    for (self.ignore_files.items) |item| {
+        allocator.free(item);
+    }
+    self.ignore_files.deinit(allocator);
 
     if (self.repo.len > 0) {
-        self.allocator.free(self.repo);
+        allocator.free(self.repo);
     }
 }
 
@@ -102,4 +134,40 @@ fn append(
         .tracked_path = owned_value,
         .offset = start_offset,
     });
+}
+
+fn parse_inline_or_arr(
+    alloc: std.mem.Allocator,
+    list: anytype,
+    buffer: []const u8,
+    val: []const u8,
+    current_section: anytype,
+    section_type: @TypeOf(current_section.*),
+) !void {
+    const bracket_idx = std.mem.indexOfScalar(u8, val, '[') orelse return;
+    const remainder = std.mem.trim(u8, val[bracket_idx + 1 ..], " \t,");
+    if (remainder.len == 0) {
+        current_section.* = section_type;
+        return;
+    }
+
+    if (std.mem.indexOfScalar(u8, remainder, ']')) |end_bracket| {
+        const inline_item = std.mem.trim(u8, remainder[0..end_bracket], " \t,");
+        if (inline_item.len > 0) {
+            if (@TypeOf(list.*) == std.ArrayList(Tracked)) {
+                try append(alloc, list, buffer, inline_item);
+            } else {
+                const owned = try alloc.dupe(u8, inline_item);
+                try list.append(alloc, owned);
+            }
+        }
+    } else {
+        if (@TypeOf(list.*) == std.ArrayList(Tracked)) {
+            try append(alloc, list, buffer, remainder);
+        } else {
+            const owned = try alloc.dupe(u8, remainder);
+            try list.append(alloc, owned);
+        }
+        current_section.* = section_type;
+    }
 }

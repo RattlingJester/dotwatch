@@ -1,8 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const watch = @import("watch.zig");
-const config = @import("config.zig");
+const watcher = @import("file_watcher.zig");
+const Config = @import("config.zig");
 const git = @import("git_wrapper.zig");
 
 pub const std_options = std.Options{ .logFn = log, .log_level = .info };
@@ -36,46 +36,26 @@ pub fn main(init: std.process.Init) !void {
     const contents = cwd.readFileAlloc(io, config_path, gpa, .unlimited) catch {
         std.log.err("Could not find config file at path: {s}", .{config_path});
 
-        gpa.free(config_path);
         std.process.exit(1);
     };
     defer gpa.free(contents);
 
-    var conf = config.parse(gpa, contents) catch {
-        // TODO: print the error
+    var conf = Config.parse(gpa, contents) catch |err| {
+        std.log.err("Config parse error: {}", .{err});
 
-        gpa.free(contents);
         std.process.exit(1);
     };
-    defer conf.deinit();
+    defer conf.deinit(gpa);
 
-    var state = try watch.init(gpa, io, state_path);
+    var state = try watcher.init(gpa, io, state_path);
     defer state.deinit();
 
-    const changed = try state.update(io, conf);
+    const changed = try state.update(io, &conf);
     defer gpa.free(changed);
 
+    try copy_files(io, gpa, changed, conf);
+
     try state.store(io, state_path);
-
-    for (changed) |diff| {
-        const folder_name = std.fs.path.basename(diff.parent_dir);
-
-        var rel_path = diff.file_path[diff.parent_dir.len..];
-        if (rel_path.len > 0 and (rel_path[0] == '/' or rel_path[0] == '\\')) {
-            rel_path = rel_path[1..];
-        }
-
-        const dest = try std.fs.path.join(gpa, &.{ conf.repo, folder_name, rel_path });
-        defer gpa.free(dest);
-
-        if (std.fs.path.dirname(dest)) |dir_path| {
-            try cwd.createDirPath(io, dir_path);
-        }
-
-        // std.debug.print("Diff item: {s}\n", .{diff.file_path});
-
-        try cwd.copyFile(diff.file_path, cwd, dest, io, .{});
-    }
 
     git.init();
     defer git.deinit();
@@ -89,6 +69,33 @@ pub fn main(init: std.process.Init) !void {
 
     const time = std.Io.Clock.real.now(io);
     try git.commit_everything(repo, time);
+}
+
+fn copy_files(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    changed: []const watcher.Diff,
+    config: Config,
+) !void {
+    const cwd = std.Io.Dir.cwd();
+
+    for (changed) |diff| {
+        const folder_name = std.fs.path.basename(diff.parent_dir);
+
+        var rel_path = diff.file_path[diff.parent_dir.len..];
+        if (rel_path.len > 0 and (rel_path[0] == '/' or rel_path[0] == '\\')) {
+            rel_path = rel_path[1..];
+        }
+
+        const dest = try std.fs.path.join(alloc, &.{ config.repo, folder_name, rel_path });
+        defer alloc.free(dest);
+
+        if (std.fs.path.dirname(dest)) |dir_path| {
+            try cwd.createDirPath(io, dir_path);
+        }
+
+        try cwd.copyFile(diff.file_path, cwd, dest, io, .{});
+    }
 }
 
 // Probably should do something better

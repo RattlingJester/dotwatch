@@ -16,11 +16,15 @@ var n_new: usize = 0;
 var n_modified: usize = 0;
 var n_unchanged: usize = 0;
 
-alloc: std.mem.Allocator,
 map: StateMap,
 diff: std.ArrayList(Diff) = .empty,
+alloc: std.mem.Allocator,
 
-pub fn init(alloc: std.mem.Allocator, io: std.Io, db_path: []const u8) !Self {
+pub fn init(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    db_path: []const u8,
+) !Self {
     const map = load(alloc, io, db_path) catch |err| switch (err) {
         error.FileNotFound => blk: {
             log.warn("state file '{s}' not found, starting with empty state", .{db_path});
@@ -43,7 +47,11 @@ pub fn deinit(self: *Self) void {
     self.map.deinit();
 }
 
-pub fn update(self: *Self, io: std.Io, config: Config) ![]const Diff {
+pub fn update(
+    self: *Self,
+    io: std.Io,
+    config: *const Config,
+) ![]const Diff {
     const alloc = self.alloc;
 
     errdefer self.diff.deinit(alloc);
@@ -69,7 +77,7 @@ pub fn update(self: *Self, io: std.Io, config: Config) ![]const Diff {
                 };
                 defer dir.close(io);
 
-                try self.process_dir(entry, dir, alloc, io);
+                try self.process_dir(entry, dir, config.ignore_files.items, alloc, io);
             },
             .file => try self.process_file(entry, "", stat, alloc),
             else => return error.NotSupportedFileType,
@@ -116,10 +124,48 @@ pub fn store(self: *const Self, io: std.Io, path: []const u8) !void {
     log.info("saved {d} entries to '{s}'", .{ self.map.count(), path });
 }
 
+fn load(alloc: std.mem.Allocator, io: std.Io, db_path: []const u8) !StateMap {
+    const file = try std.Io.Dir.cwd().openFile(io, db_path, .{});
+    defer file.close(io);
+
+    var read_buf: [4096]u8 = undefined;
+    var file_reader = file.reader(io, &read_buf);
+    const r = &file_reader.interface;
+
+    var map = StateMap.init(alloc);
+    errdefer {
+        free_keys(alloc, &map);
+        map.deinit();
+    }
+
+    const num_entries = try r.takeInt(u32, .little);
+    try map.ensureTotalCapacity(num_entries);
+
+    for (0..num_entries) |_| {
+        const key_len = try r.takeInt(u32, .little);
+
+        const key = try alloc.alloc(u8, key_len);
+        errdefer alloc.free(key);
+
+        try r.readSliceAll(key);
+        const value = try r.takeInt(i128, .little);
+
+        const gop = map.getOrPutAssumeCapacity(key);
+        if (gop.found_existing) {
+            log.warn("duplicate key '{s}' in state file, keeping the latest value", .{key});
+            alloc.free(key);
+        }
+        gop.value_ptr.* = value;
+    }
+
+    return map;
+}
+
 fn process_dir(
     self: *Self,
     entry: Tracked,
     dir: std.Io.Dir,
+    ignore: [][]const u8,
     alloc: std.mem.Allocator,
     io: std.Io,
 ) !void {
@@ -129,6 +175,8 @@ fn process_dir(
     // Walker visits subdirectories automatically
     while (try walker.next(io)) |item| {
         if (item.kind == .file) {
+            if (should_ignore(item.path, ignore)) continue;
+
             const stat = dir.statFile(io, item.path, .{}) catch |err| {
                 log.err("cannot stat '{s}/{s}': {}", .{ entry.tracked_path, item.path, err });
 
@@ -182,44 +230,22 @@ fn process_file(
     }
 }
 
-fn load(alloc: std.mem.Allocator, io: std.Io, db_path: []const u8) !StateMap {
-    const file = try std.Io.Dir.cwd().openFile(io, db_path, .{});
-    defer file.close(io);
-
-    var read_buf: [4096]u8 = undefined;
-    var file_reader = file.reader(io, &read_buf);
-    const r = &file_reader.interface;
-
-    var map = StateMap.init(alloc);
-    errdefer {
-        free_keys(alloc, &map);
-        map.deinit();
-    }
-
-    const num_entries = try r.takeInt(u32, .little);
-    try map.ensureTotalCapacity(num_entries);
-
-    for (0..num_entries) |_| {
-        const key_len = try r.takeInt(u32, .little);
-
-        const key = try alloc.alloc(u8, key_len);
-        errdefer alloc.free(key);
-
-        try r.readSliceAll(key);
-        const value = try r.takeInt(i128, .little);
-
-        const gop = map.getOrPutAssumeCapacity(key);
-        if (gop.found_existing) {
-            log.warn("duplicate key '{s}' in state file, keeping the latest value", .{key});
-            alloc.free(key);
-        }
-        gop.value_ptr.* = value;
-    }
-
-    return map;
-}
-
 fn free_keys(alloc: std.mem.Allocator, map: *StateMap) void {
     var it = map.keyIterator();
     while (it.next()) |key| alloc.free(key.*);
+}
+
+fn should_ignore(path: []const u8, ignore_patterns: [][]const u8) bool {
+    const ext = std.fs.path.extension(path);
+    const basename = std.fs.path.basename(path);
+
+    for (ignore_patterns) |pattern| {
+        if (std.mem.startsWith(u8, pattern, "*.")) {
+            if (std.mem.eql(u8, ext, pattern[1..])) return true;
+        } else {
+            if (std.mem.eql(u8, basename, pattern)) return true;
+        }
+    }
+
+    return false;
 }
