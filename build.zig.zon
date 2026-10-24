@@ -1,12 +1,12 @@
 .{
     .name = .dotwatch,
     .version = "0.0.1",
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
+    .fingerprint = 0x4ae7bfc8463e5e67,
     .paths = .{
         "src",
         "build.zig",
         "build.zig.zon",
         "README.md",
     },
-    .fingerprint = 0x4ae7bfc8463e5e67,
 }
