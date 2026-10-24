@@ -11,7 +11,7 @@ pub const Diff = struct {
     parent_dir: []const u8,
 };
 
-// TODO: make this without globals
+// TODO: remove globals
 var n_new: usize = 0;
 var n_modified: usize = 0;
 var n_unchanged: usize = 0;
@@ -93,33 +93,29 @@ pub fn update(
 }
 
 pub fn store(self: *const Self, io: std.Io, path: []const u8) !void {
-    const tmp_path = try std.fmt.allocPrint(self.alloc, "{s}.tmp", .{path});
-    defer self.alloc.free(tmp_path);
-
     const cwd = std.Io.Dir.cwd();
+    const byte_size = size_of_map(&self.map);
 
-    {
-        const file = try cwd.createFile(io, tmp_path, .{});
-        defer file.close(io);
+    const file = try cwd.createFile(io, path, .{});
+    defer file.close(io);
 
-        var write_buf: [4096]u8 = undefined;
-        var file_writer = file.writer(io, &write_buf);
-        const w = &file_writer.interface;
+    const write_buf = try self.alloc.alloc(u8, byte_size);
+    defer self.alloc.free(write_buf);
 
-        try w.writeInt(u32, @intCast(self.map.count()), .little);
+    var file_writer = file.writer(io, write_buf);
+    const w = &file_writer.interface;
 
-        var it = self.map.iterator();
-        while (it.next()) |entry| {
-            const key = entry.key_ptr.*;
-            try w.writeInt(u32, @intCast(key.len), .little);
-            try w.writeAll(key);
-            try w.writeInt(i128, entry.value_ptr.*, .little);
-        }
+    try w.writeInt(u32, @intCast(self.map.count()), .little);
 
-        try w.flush();
+    var it = self.map.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        try w.writeInt(u32, @intCast(key.len), .little);
+        try w.writeAll(key);
+        try w.writeInt(i128, entry.value_ptr.*, .little);
     }
 
-    try std.Io.Dir.rename(cwd, tmp_path, cwd, path, io);
+    try w.flush();
 
     log.info("saved {d} entries to '{s}'", .{ self.map.count(), path });
 }
@@ -128,8 +124,13 @@ fn load(alloc: std.mem.Allocator, io: std.Io, db_path: []const u8) !StateMap {
     const file = try std.Io.Dir.cwd().openFile(io, db_path, .{});
     defer file.close(io);
 
-    var read_buf: [4096]u8 = undefined;
-    var file_reader = file.reader(io, &read_buf);
+    const stat = try file.stat(io);
+    const size = stat.size;
+
+    const read_buf = try alloc.alloc(u8, size);
+    defer alloc.free(read_buf);
+
+    var file_reader = file.reader(io, read_buf);
     const r = &file_reader.interface;
 
     var map = StateMap.init(alloc);
@@ -248,4 +249,18 @@ fn should_ignore(path: []const u8, ignore_patterns: [][]const u8) bool {
     }
 
     return false;
+}
+
+/// Get allocation size for my binary format
+fn size_of_map(map: *const StateMap) usize {
+    var size: usize = @sizeOf(u32);
+
+    var it = map.iterator();
+    while (it.next()) |entry| {
+        size += @sizeOf(u32);
+        size += entry.key_ptr.*.len;
+        size += @sizeOf(i128);
+    }
+
+    return size;
 }

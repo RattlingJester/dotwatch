@@ -1,9 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const git = @import("git_wrapper.zig");
 const watcher = @import("file_watcher.zig");
 const Config = @import("config.zig");
-const git = @import("git_wrapper.zig");
 
 pub const std_options = std.Options{ .logFn = log, .log_level = .info };
 
@@ -21,6 +21,10 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const gpa = init.gpa;
 
+    var buffer: [4096]u8 = undefined;
+    var buffer_alloc = std.heap.BufferFirstAllocator.init(&buffer, gpa);
+    const alloc = buffer_alloc.allocator();
+
     global_io = io;
 
     const env_map = init.environ_map;
@@ -28,33 +32,34 @@ pub fn main(init: std.process.Init) !void {
 
     const cwd = std.Io.Dir.cwd();
 
-    const config_path = try std.fs.path.join(gpa, &.{ home, CONFIG_PATH });
-    const state_path = try std.fs.path.join(gpa, &.{ home, STATE_PATH });
-    defer gpa.free(config_path);
-    defer gpa.free(state_path);
+    const config_path = try std.fs.path.join(alloc, &.{ home, CONFIG_PATH });
+    const state_path = try std.fs.path.join(alloc, &.{ home, STATE_PATH });
+    defer alloc.free(config_path);
+    defer alloc.free(state_path);
 
-    const contents = cwd.readFileAlloc(io, config_path, gpa, .unlimited) catch {
+    const contents = cwd.readFileAlloc(io, config_path, alloc, .unlimited) catch {
         std.log.err("Could not find config file at path: {s}", .{config_path});
 
         std.process.exit(1);
     };
-    defer gpa.free(contents);
+    defer alloc.free(contents);
 
-    var conf = Config.parse(gpa, contents) catch |err| {
+    var conf = Config.parse(alloc, contents) catch |err| {
         std.log.err("Config parse error: {}", .{err});
 
         std.process.exit(1);
     };
-    defer conf.deinit(gpa);
+    defer conf.deinit(alloc);
 
-    var state = try watcher.init(gpa, io, state_path);
+    var state = try watcher.init(alloc, io, state_path);
     defer state.deinit();
 
-    const changed = try state.update(io, &conf);
-    defer gpa.free(changed);
+    const diff = try state.update(io, &conf);
+    defer alloc.free(diff);
 
-    try copy_files(io, gpa, changed, conf);
+    if (diff.len == 0) return; // Nothing to do here
 
+    try copy_files(io, alloc, diff, &conf);
     try state.store(io, state_path);
 
     git.init();
@@ -75,7 +80,7 @@ fn copy_files(
     io: std.Io,
     alloc: std.mem.Allocator,
     changed: []const watcher.Diff,
-    config: Config,
+    config: *const Config,
 ) !void {
     const cwd = std.Io.Dir.cwd();
 
