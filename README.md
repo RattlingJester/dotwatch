@@ -4,23 +4,27 @@ It monitors targeted files and directories (ignoring symlinks), tracking changes
 
 ## Configuration
 `dotwatch` reads its tracking state from a central configuration file. The file enforces explicit layout sections. All three components (`repo`, `tracked`, and `config`) are required.
+
 ## Example config
-```toml
-# Destination repo
-repo = "/home/user/clones/dotfiles"
+```zon
+.{
+    // Array of files/dirs to track
+    .tracked = .{
+        "/home/user/.config/fish",
+        "/home/user/.config/helix",
+        "/home/user/.config/lazygit",
+        "/home/user/.config/yazi",
+        "/home/user/.config/starship.toml",
+    },
 
-# Array of files/dirs to track
-tracked = [
-  "/home/user/.config/helix"
-  "/home/user/.config/starship.toml"
-]
-
-[config]
-# Files/dirs matching this patterns are skipped
-ignore_files = [
-  "*.db"
-  "secret.txt"
-]
+    // Destination repo
+    .repo = "/home/user/Github/dotfiles",
+    
+    // Files matching this patterns are skipped
+    .ignore = .{
+        "*.db",
+    },
+}
 ```
 
 # Building

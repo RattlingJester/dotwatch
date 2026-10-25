@@ -59,21 +59,21 @@ pub fn main(init: std.process.Init) !void {
 
     if (diff.len == 0) return; // Nothing to do here
 
-    // try copy_files(io, alloc, diff, &conf);
-    // try state.store(io, state_path);
+    try copy_files(io, alloc, diff, &conf);
+    try state.store(io, state_path);
 
-    // git.init();
-    // defer git.deinit();
+    git.init();
+    defer git.deinit();
 
-    // const repo = git.repository_open(conf.repo) catch |e| {
-    //     std.log.err("Failed to open repository: {}", .{e});
+    const repo = git.repository_open(conf.repo) catch |e| {
+        std.log.err("Failed to open repository: {}", .{e});
 
-    //     std.process.exit(1);
-    // };
-    // defer git.repository_deinit(repo);
+        std.process.exit(1);
+    };
+    defer git.repository_deinit(repo);
 
-    // const time = std.Io.Clock.real.now(io);
-    // try git.commit_everything(repo, time);
+    const time = std.Io.Clock.real.now(io);
+    try git.commit_everything(repo, time);
 }
 
 fn copy_files(
