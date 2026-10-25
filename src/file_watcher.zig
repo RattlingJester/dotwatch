@@ -1,6 +1,6 @@
 const std = @import("std");
 const Config = @import("config.zig");
-const Tracked = Config.Tracked;
+// const Tracked = Config.Tracked;
 const log = std.log.scoped(.state);
 
 const Self = @This();
@@ -56,28 +56,28 @@ pub fn update(
 
     errdefer self.diff.deinit(alloc);
 
-    for (config.tracked.items) |entry| {
-        log.info("scanning '{s}'", .{entry.tracked_path});
+    for (config.tracked) |entry| {
+        log.info("scanning '{s}'", .{entry});
 
-        const stat = std.Io.Dir.cwd().statFile(io, entry.tracked_path, .{}) catch |err| {
-            log.err("cannot stat '{s}': {}", .{ entry.tracked_path, err });
+        const stat = std.Io.Dir.cwd().statFile(io, entry, .{}) catch |err| {
+            log.err("cannot stat '{s}': {}", .{ entry, err });
 
             return err;
         };
 
         switch (stat.kind) {
             .directory => {
-                var dir = std.Io.Dir.cwd().openDir(io, entry.tracked_path, .{
+                var dir = std.Io.Dir.cwd().openDir(io, entry, .{
                     .iterate = true,
                     .follow_symlinks = false,
                 }) catch |err| {
-                    log.err("cannot open tracked directory '{s}': {}", .{ entry.tracked_path, err });
+                    log.err("cannot open tracked directory '{s}': {}", .{ entry, err });
 
                     return err;
                 };
                 defer dir.close(io);
 
-                try self.process_dir(entry, dir, config.ignore_files.items, alloc, io);
+                try self.process_dir(entry, dir, config.ignore, alloc, io);
             },
             .file => try self.process_file(entry, "", stat, alloc),
             else => return error.NotSupportedFileType,
@@ -164,9 +164,9 @@ fn load(alloc: std.mem.Allocator, io: std.Io, db_path: []const u8) !StateMap {
 
 fn process_dir(
     self: *Self,
-    entry: Tracked,
+    entry: [:0]const u8,
     dir: std.Io.Dir,
-    ignore: [][]const u8,
+    ignore: []const []const u8,
     alloc: std.mem.Allocator,
     io: std.Io,
 ) !void {
@@ -179,7 +179,7 @@ fn process_dir(
             if (should_ignore(item.path, ignore)) continue;
 
             const stat = dir.statFile(io, item.path, .{}) catch |err| {
-                log.err("cannot stat '{s}/{s}': {}", .{ entry.tracked_path, item.path, err });
+                log.err("cannot stat '{s}/{s}': {}", .{ entry, item.path, err });
 
                 return err;
             };
@@ -190,14 +190,14 @@ fn process_dir(
 }
 fn process_file(
     self: *Self,
-    entry: Tracked,
+    entry: [:0]const u8,
     sub_path: []const u8,
     stat: std.Io.Dir.Stat,
     alloc: std.mem.Allocator,
 ) !void {
     const mtime: i128 = stat.mtime.nanoseconds;
 
-    const full = try std.fs.path.join(alloc, &.{ entry.tracked_path, sub_path });
+    const full = try std.fs.path.join(alloc, &.{ entry, sub_path });
 
     if (self.map.getEntry(full)) |kv| {
         alloc.free(full);
@@ -207,7 +207,7 @@ fn process_file(
 
             try self.diff.append(alloc, .{
                 .file_path = kv.key_ptr.*,
-                .parent_dir = entry.tracked_path,
+                .parent_dir = entry,
             });
             n_modified += 1;
 
@@ -223,7 +223,7 @@ fn process_file(
 
         try self.diff.append(alloc, .{
             .file_path = full,
-            .parent_dir = entry.tracked_path,
+            .parent_dir = entry,
         });
         n_new += 1;
 
@@ -236,7 +236,7 @@ fn free_keys(alloc: std.mem.Allocator, map: *StateMap) void {
     while (it.next()) |key| alloc.free(key.*);
 }
 
-fn should_ignore(path: []const u8, ignore_patterns: [][]const u8) bool {
+fn should_ignore(path: []const u8, ignore_patterns: []const []const u8) bool {
     const ext = std.fs.path.extension(path);
     const basename = std.fs.path.basename(path);
 

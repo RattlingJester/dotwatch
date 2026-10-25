@@ -12,7 +12,7 @@ const CONFIG_DIR = switch (builtin.target.os.tag) {
     .linux => ".config/dotwatch/",
     else => @compileError("OS not supported"),
 };
-const CONFIG_PATH = CONFIG_DIR ++ "config.toml";
+const CONFIG_PATH = CONFIG_DIR ++ "config.zon";
 const STATE_PATH = CONFIG_DIR ++ "db";
 
 var global_io: std.Io = undefined;
@@ -20,6 +20,7 @@ var global_io: std.Io = undefined;
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const gpa = init.gpa;
+    const arena = init.arena.allocator();
 
     var buffer: [4096]u8 = undefined;
     var buffer_alloc = std.heap.BufferFirstAllocator.init(&buffer, gpa);
@@ -37,19 +38,18 @@ pub fn main(init: std.process.Init) !void {
     defer alloc.free(config_path);
     defer alloc.free(state_path);
 
-    const contents = cwd.readFileAlloc(io, config_path, alloc, .unlimited) catch {
+    const contents = cwd.readFileAllocOptions(io, config_path, alloc, .unlimited, .@"8", 0) catch {
         std.log.err("Could not find config file at path: {s}", .{config_path});
 
         std.process.exit(1);
     };
     defer alloc.free(contents);
 
-    var conf = Config.parse(alloc, contents) catch |err| {
+    var conf = Config.parse(alloc, arena, contents) catch |err| {
         std.log.err("Config parse error: {}", .{err});
 
         std.process.exit(1);
     };
-    defer conf.deinit(alloc);
 
     var state = try watcher.init(alloc, io, state_path);
     defer state.deinit();
@@ -59,21 +59,21 @@ pub fn main(init: std.process.Init) !void {
 
     if (diff.len == 0) return; // Nothing to do here
 
-    try copy_files(io, alloc, diff, &conf);
-    try state.store(io, state_path);
+    // try copy_files(io, alloc, diff, &conf);
+    // try state.store(io, state_path);
 
-    git.init();
-    defer git.deinit();
+    // git.init();
+    // defer git.deinit();
 
-    const repo = git.repository_open(conf.repo) catch |e| {
-        std.log.err("Failed to open repository: {}", .{e});
+    // const repo = git.repository_open(conf.repo) catch |e| {
+    //     std.log.err("Failed to open repository: {}", .{e});
 
-        std.process.exit(1);
-    };
-    defer git.repository_deinit(repo);
+    //     std.process.exit(1);
+    // };
+    // defer git.repository_deinit(repo);
 
-    const time = std.Io.Clock.real.now(io);
-    try git.commit_everything(repo, time);
+    // const time = std.Io.Clock.real.now(io);
+    // try git.commit_everything(repo, time);
 }
 
 fn copy_files(
